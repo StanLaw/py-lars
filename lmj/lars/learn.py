@@ -20,6 +20,7 @@
 
 '''A Python/numpy implementation of sparse dictionary learning using LARS.'''
 
+import logging
 import numpy
 
 import scikits.learn.linear_model.least_angle as lars
@@ -28,8 +29,8 @@ import scikits.learn.linear_model.least_angle as lars
 def infer_basis(px,
                 num_codebooks,
                 sparsity=0.1,
-                batch=100,
-                learning_iterations=100, learning_threshold=0.01,
+                batch=256,
+                learning_iterations=3, learning_threshold=0.001,
                 resample_every=None, resample_percentile=None):
     '''Given a distribution of data, compute an efficient basis.
 
@@ -73,7 +74,8 @@ def infer_basis(px,
     This function generates a sequence of basis dictionaries, each more
     efficient than the last for encoding elements drawn from p(x). Each
     dictionary has num_codebooks rows and the same number of columns as the
-    length of elements returned by p(x).
+    length of elements returned by p(x). Note that this is the transpose of the
+    typical representation for this matrix.
 
     Attribution
     -----------
@@ -120,12 +122,13 @@ def infer_basis(px,
             usage[:] = 0
 
         # eq 11 -- mini-batch extension
-        theta = t * batch
-        if t >= batch:
-            theta = batch ** 2 + t - batch
-        beta = (theta + 1. - batch) / (theta + 1.)
-        A *= beta
-        B *= beta
+        if batch > 1:
+            theta = t * batch
+            if t >= batch:
+                theta = batch ** 2 + t - batch
+            beta = (theta + 1. - batch) / (theta + 1.)
+            A *= beta
+            B *= beta
 
         for _ in range(batch):
             x = px()
@@ -134,7 +137,8 @@ def infer_basis(px,
 
             try:
                 _, _, coeffs = lars.lars_path(D.T, x, max_features=max_features)
-            except:
+            except FloatingPointError:
+                logging.debug('numerical instability in LARS, skipping')
                 continue
 
             alpha = coeffs[:, -1].reshape((len(coeffs[:, -1]), 1))
@@ -145,12 +149,15 @@ def infer_basis(px,
         # algorithm 2 -- repeatedly increment basis vectors.
         for _ in xrange(learning_iterations):
             D_[:] = D
-            for j, (d, a, b) in enumerate(zip(D, A, B)):
-                # eq 10
-                u = d + (b - numpy.dot(D.T, a)) / (a[j] or 1)
-                d[:] = u / max(numpy.linalg.norm(u), 1)
-
-            if numpy.linalg.norm(D - D_) < learning_threshold:
+            try:
+                for j, (d, a, b) in enumerate(zip(D, A, B)):
+                    # eq 10
+                    u = d + (b - numpy.dot(D.T, a)) / (a[j] or 1)
+                    d[:] = u / max(numpy.linalg.norm(u), 1)
+                if numpy.linalg.norm(D - D_) < learning_threshold:
+                    break
+            except FloatingPointError:
+                logging.debug('numerical instability in dictionary update')
                 break
 
     yield D
